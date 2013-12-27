@@ -4,7 +4,11 @@
 
 use File::Slurp;
 use File::Temp qw/ tempfile /;
-require threads if $t;
+use IPC::Run qw( run );
+if($t) {
+  use threads;
+  use threads::shared qw( share );
+}
 
 @ARGV==2 or die "usage: jpegrescan in.jpg out.jpg
 tries various progressive scan orders
@@ -19,7 +23,6 @@ switches:
 $fin = $ARGV[0];
 $fout = $ARGV[1];
 (undef, $ftmp) = tempfile(SUFFIX => ".scan");
-$jtmp = $fout;
 $verbose = $v;
 $quiet = $q;
 if($t) {
@@ -31,30 +34,29 @@ $incompatible = $i;
 $dostrip = $s || $i;
 @strip = $dostrip ? ("-copy","none") : ("-copy","all");
 @arith = $a ? ("-arithmetic") : ();
-undef $_ for $v,$q,$t,$s,$i,$a;
+undef $_ for $v,$q,$s,$i,$a;
 undef $/;
 $|=1;
 
 # convert the input to baseline, just to make all the other conversions faster
 # FIXME there's still a bunch of redundant computation in separate calls to jpegtran
-open $OLDERR, ">&", STDERR;
-open STDERR, ">", $ftmp;
-open TRAN, "-|", "jpegtran", "-v", @strip, "-optimize", $fin or die;
-$data = <TRAN>;
-close TRAN;
+@jt = ("jpegtran", "-v", @strip, "-optimize", $fin );
+$data = "";
+$jtmp = "";
+my $type;
+run \@jt, \undef, \$jtmp, \$type or die;
 # Strictly speaking, jfifremove does not generate a compliant JPEG file.
 # However, this is our temp file.  It will always be run by jpegtran again.
 # So this gets rid of all existing JFIF segments.
 # And jpegtran will insert a minimal (18-byte) JFIF segment.
-# (Which -o will remove again if requested!)
-$data = jfifremove($data) if($dostrip);
-write_file($jtmp, $data);
-undef $data;
-open STDERR, ">&", $OLDERR;
+# (Which -i will remove again if requested!)
+$jtmp = jfifremove($jtmp) if($dostrip);
+share($jtmp) if $t;
+undef $t;
 
-$type = read_file($ftmp);
 $type =~ /components=(\d+)/ or die;
 $rgb = $1==3 ? 1 : $1==1 ? 0 : die "not RGB nor gray\n";
+undef $type;
 
 # Remove JFIF sections, written by Ken Brazier.
 # Based on http://lyncd.com/files/imgopt/jfifremove.c
@@ -94,9 +96,8 @@ sub try {
     my $lftmp = $ftmp;
     $lftmp .= shift if($#_ == 0);
     write_file($lftmp, $txt);
-    open TRAN, "-|", "jpegtran", @arith, @strip, "-scans", $lftmp, $jtmp or die;
-    $data = <TRAN>;
-    close TRAN;
+    my @jt = ( "jpegtran", @arith, @strip, "-scans", $lftmp );
+    run \@jt, \$jtmp, \$data or die;
     my $s = length $data;
     $s or die;
     !$quiet && print $verbose ? "$txt\n$s\n\n" : ".";

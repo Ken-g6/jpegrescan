@@ -5,6 +5,7 @@
 use File::Slurp;
 use File::Temp qw/ tempfile /;
 use IPC::Run qw( run );
+use IPC::Open2 qw( open2 );
 if($t) {
   use threads;
   use threads::shared qw( share );
@@ -96,8 +97,17 @@ sub try {
     my $lftmp = $ftmp;
     $lftmp .= shift if($#_ == 0);
     write_file($lftmp, $txt);
-    my @jt = ( "jpegtran", @arith, @strip, "-scans", $lftmp );
-    run \@jt, \$jtmp, \$data or die;
+    local($/);
+    my @jt = ( @arith, @strip, "-scans", $lftmp );
+
+    local(*HIS_OUT, *HIS_IN);  # Create local handles if needed.
+    my $childpid = open2(*HIS_OUT, *HIS_IN, "jpegtran", @jt) or die;
+    print HIS_IN $jtmp;
+    close(HIS_IN);
+    $data = <HIS_OUT>;
+    close(HIS_OUT);
+    waitpid($childpid, 0);
+
     my $s = length $data;
     $s or die;
     !$quiet && print $verbose ? "$txt\n$s\n\n" : ".";
